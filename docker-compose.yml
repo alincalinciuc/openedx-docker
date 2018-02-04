@@ -61,6 +61,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./data/lms:/openedx/data
+      - ./themes:/openedx/edx-platform/themes
     depends_on:
       - memcached
       - mongodb
@@ -76,6 +77,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./data/cms:/openedx/data
+      - ./themes:/openedx/edx-platform/themes
     depends_on:
       - lms
 
