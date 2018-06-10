@@ -1,28 +1,47 @@
-.PHONY: all configure build migrate assets up daemon lms-assets cms-assets
+.PHONY: all android configure build update migrate assets up daemon
 
-all: configure build migrate assets daemon
+USERID ?= $$(id -u)
+EDX_PLATFORM_SETTINGS ?= universal.production
+DOCKER_COMPOSE_RUN = docker-compose run --rm
+DOCKER_COMPOSE_RUN_OPENEDX = $(DOCKER_COMPOSE_RUN) -e USERID=$(USERID) -e SETTINGS=$(EDX_PLATFORM_SETTINGS)
+ifneq ($(EDX_PLATFORM_PATH),)
+	DOCKER_COMPOSE_RUN_OPENEDX += --volume="$(EDX_PLATFORM_PATH):/openedx/edx-platform"
+endif
 
-##################### Bootstrapping commands
+DOCKER_COMPOSE_RUN_LMS = $(DOCKER_COMPOSE_RUN_OPENEDX) -p 8000:8000 lms
+DOCKER_COMPOSE_RUN_CMS = $(DOCKER_COMPOSE_RUN_OPENEDX) -p 8001:8001 cms
+
+all: configure update migrate assets daemon
+
+##################### Bootstrapping
 
 configure:
 	./configure
 
-build:
-	docker-compose build
+update:
+	docker-compose pull
 
-migrate:
-	docker-compose run --rm lms bash -c "./wait-for-greenlight.sh && ./manage.py lms --settings=production migrate"
-	docker-compose run --rm cms bash -c "./wait-for-greenlight.sh && ./manage.py cms --settings=production migrate"
+provision:
+	$(DOCKER_COMPOSE_RUN) lms bash -c "dockerize -wait tcp://mysql:3306 -timeout 20s && bash /openedx/config/provision.sh"
 
-assets: lms-assets cms-assets
+migrate-openedx:
+	$(DOCKER_COMPOSE_RUN_OPENEDX) lms bash -c "dockerize -wait tcp://mysql:3306 -timeout 20s && ./manage.py lms migrate"
+	$(DOCKER_COMPOSE_RUN_OPENEDX) cms bash -c "dockerize -wait tcp://mysql:3306 -timeout 20s && ./manage.py cms migrate"
 
-lms-assets:
-	docker-compose run --rm lms paver update_assets lms --settings=production --collect-log=/openedx/data/logs
+migrate-forum:
+	$(DOCKER_COMPOSE_RUN) forum bash -c "bundle exec rake search:initialize && \
+		bundle exec rake search:rebuild_index"
 
-cms-assets:
-	docker-compose run --rm cms paver update_assets cms --settings=production --collect-log=/openedx/data/logs
+migrate-xqueue:
+	$(DOCKER_COMPOSE_RUN) xqueue bash -c "./manage.py migrate"
 
-##################### Running commands
+migrate: provision migrate-openedx migrate-forum migrate-xqueue
+
+assets:
+	$(DOCKER_COMPOSE_RUN_OPENEDX) lms paver update_assets lms --settings=$(EDX_PLATFORM_SETTINGS)
+	$(DOCKER_COMPOSE_RUN_OPENEDX) cms paver update_assets cms --settings=$(EDX_PLATFORM_SETTINGS)
+
+##################### Running
 
 up:
 	docker-compose up
@@ -32,17 +51,61 @@ daemon:
 	echo "Daemon is up and running"
 
 stop:
-	docker-compose stop
+	docker-compose rm --stop --force
 
-##################### Additional commands
-
-lms-shell:
-	docker-compose run --rm lms ./manage.py lms --settings=production shell
-cms-shell:
-	docker-compose run --rm lms ./manage.py cms --settings=production shell
+##################### Extra
 
 import-demo-course:
-	docker-compose run --rm cms /bin/bash -c "git clone https://github.com/edx/edx-demo-course ../edx-demo-course && git -C ../edx-demo-course checkout open-release/ginkgo.master && python ./manage.py cms --settings=production import ../data ../edx-demo-course"
+	$(DOCKER_COMPOSE_RUN_OPENEDX) cms /bin/bash -c "git clone https://github.com/edx/edx-demo-course ../edx-demo-course && git -C ../edx-demo-course checkout open-release/ginkgo.master && python ./manage.py cms import ../data ../edx-demo-course"
 
 create-staff-user:
-	docker-compose run --rm lms /bin/bash -c "./manage.py lms --settings=production manage_user --superuser --staff ${USERNAME} ${EMAIL} && ./manage.py lms --settings=production changepassword ${USERNAME}"
+	$(DOCKER_COMPOSE_RUN_OPENEDX) lms /bin/bash -c "./manage.py lms manage_user --superuser --staff ${USERNAME} ${EMAIL} && ./manage.py lms changepassword ${USERNAME}"
+
+
+##################### Development
+
+lms:
+	$(DOCKER_COMPOSE_RUN_LMS) bash
+cms:
+	$(DOCKER_COMPOSE_RUN_CMS) bash
+
+lms-shell:
+	$(DOCKER_COMPOSE_RUN_OPENEDX) lms ./manage.py lms shell
+cms-shell:
+	$(DOCKER_COMPOSE_RUN_OPENEDX) cms ./manage.py cms shell
+
+
+#################### Android app
+
+android:
+	docker-compose -f docker-compose-android.yml run --rm android
+	@echo "Your APK file is ready: ./data/android/edx-prod-debuggable-2.14.0.apk"
+
+android-release:
+	# Note that this requires that you edit ./config/android/gradle.properties
+	docker-compose -f docker-compose-android.yml run --rm android ./gradlew assembleProdRelease
+
+android-build:
+	docker build -t regis/openedx-android:latest android/
+android-push:
+	docker push regis/openedx-android:latest
+android-dockerhub: android-build android-push
+
+
+#################### Deploying to docker hub
+
+build:
+	# We need to build with docker, as long as docker-compose cannot push to dockerhub
+	docker build -t regis/openedx:latest -t regis/openedx:ginkgo openedx/
+	docker build -t regis/openedx-forum:latest -t regis/openedx-forum:ginkgo forum/
+	docker build -t regis/openedx-xqueue:latest -t regis/openedx-xqueue:ginkgo xqueue/
+
+push:
+	docker push regis/openedx:ginkgo
+	docker push regis/openedx:latest
+	docker push regis/openedx-forum:ginkgo
+	docker push regis/openedx-forum:latest
+	docker push regis/openedx-xqueue:ginkgo
+	docker push regis/openedx-xqueue:latest
+
+dockerhub: build push

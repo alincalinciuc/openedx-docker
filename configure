@@ -25,10 +25,12 @@ class Configurator(object):
     def as_dict(self):
         return dict(self.__values)
 
-    def add(self, name, question, default=""):
+    def add(self, name, question="", default=""):
         default = self.__default_overrides.get(name, default)
-        message = question + " (default: \"{}\"): ".format(default)
-        value = self.ask(message, default)
+        value = default
+        if question:
+            message = question + " (default: \"{}\"): ".format(default)
+            value = self.ask(message, default)
         self.set(name, value)
 
         return self
@@ -91,8 +93,19 @@ def template_class(user_delimiter='$'):
 
 
 def main():
+    # Hack to handle older config.json files that used to be in a different location
+    # TODO remove me
+    config_path = os.path.join("config", "config.json")
+    deprecated_paths = [
+        "config.json",
+        os.path.join("config", "openedx", "config.json"),
+    ]
+    for deprecated_path in deprecated_paths:
+        if os.path.exists(deprecated_path):
+            os.rename(deprecated_path, config_path)
+
     parser = argparse.ArgumentParser("Config file generator for Open edX")
-    parser.add_argument('-c', '--config', default="config.json",
+    parser.add_argument('-c', '--config', default=config_path,
                         help="Load default values from this file. Config values will be saved there.")
     parser.add_argument('-s', '--silent', action='store_true',
                         help=(
@@ -108,22 +121,33 @@ def main():
             defaults = json.load(f)
 
     configurator = Configurator(silent=args.silent, **defaults).add(
-        'LMS_HOST', "Your website domain name for students (LMS)", 'www.myopenedx.com'
+        'LMS_HOST', "Your website domain name for students (LMS).", 'www.myopenedx.com'
     ).add(
-        'CMS_HOST', "Your website domain name for teachers (CMS)", 'studio.myopenedx.com'
-    ).add(
-        'SECRET_KEY', "Secret key -- if you don't know what this is, you can safely accept the default",
-        "".join([random.choice(string.ascii_letters + string.digits) for _ in range(24)])
+        'CMS_HOST', "Your website domain name for teachers (CMS).", 'studio.myopenedx.com'
     ).add(
         'PLATFORM_NAME', "Platform name/title", "My Open edX"
     ).add(
-        'MYSQL_DATABASE', "MySQL database name", 'openedx'
+        'SECRET_KEY', "", random_string(24)
     ).add(
-        'MYSQL_USERNAME', "MySQL database username", 'openedx'
+        'MYSQL_DATABASE', "", 'openedx'
     ).add(
-        'MYSQL_PASSWORD', "MySQL database password", 'password'
+        'MYSQL_USERNAME', "", 'openedx'
     ).add(
-        'MONGODB_DATABASE', "MongoDb database name", 'openedx'
+        'MYSQL_PASSWORD', "", random_string(8),
+    ).add(
+        'MONGODB_DATABASE', "", 'openedx'
+    ).add(
+        'XQUEUE_AUTH_USERNAME', "", 'lms'
+    ).add(
+        'XQUEUE_AUTH_PASSWORD', "", random_string(8),
+    ).add(
+        'XQUEUE_MYSQL_DATABASE', "", 'xqueue',
+    ).add(
+        'XQUEUE_MYSQL_USERNAME', "", 'xqueue',
+    ).add(
+        'XQUEUE_MYSQL_PASSWORD', "", random_string(8),
+    ).add(
+        'XQUEUE_SECRET_KEY', "", random_string(24),
     )
 
     # Save values
@@ -133,40 +157,42 @@ def main():
 
     # Open edX
     substitute(
-        os.path.join('edxapp', 'config', 'templates', 'lms.env.json.templ'),
-        os.path.join('edxapp', 'config', 'lms.env.json'),
+        os.path.join('config', 'openedx', 'templates', 'lms.env.json.templ'),
+        os.path.join('config', 'openedx', 'lms.env.json'),
         **configurator.as_dict()
     )
     substitute(
-        os.path.join('edxapp', 'config', 'templates', 'cms.env.json.templ'),
-        os.path.join('edxapp', 'config', 'cms.env.json'),
+        os.path.join('config', 'openedx', 'templates', 'cms.env.json.templ'),
+        os.path.join('config', 'openedx', 'cms.env.json'),
         **configurator.as_dict()
     )
     substitute(
-        os.path.join('edxapp', 'config', 'templates', 'lms.auth.json.templ'),
-        os.path.join('edxapp', 'config', 'lms.auth.json'),
+        os.path.join('config', 'openedx', 'templates', 'lms.auth.json.templ'),
+        os.path.join('config', 'openedx', 'lms.auth.json'),
         **configurator.as_dict()
     )
     substitute(
-        os.path.join('edxapp', 'config', 'templates', 'cms.auth.json.templ'),
-        os.path.join('edxapp', 'config', 'cms.auth.json'),
+        os.path.join('config', 'openedx', 'templates', 'cms.auth.json.templ'),
+        os.path.join('config', 'openedx', 'cms.auth.json'),
+        **configurator.as_dict()
+    )
+    substitute(
+        os.path.join('config', 'openedx', 'templates', 'provision.sh.templ'),
+        os.path.join('config', 'openedx', 'provision.sh'),
+        **configurator.as_dict()
+    )
+
+    # Xqueue
+    substitute(
+        os.path.join('config', 'xqueue', 'templates', 'universal.py.templ'),
+        os.path.join('config', 'xqueue', 'universal.py'),
         **configurator.as_dict()
     )
 
     # MySQL
     substitute(
-        os.path.join('mysql', 'config', 'templates', 'username.templ'),
-        os.path.join('mysql', 'config', 'username'),
-        **configurator.as_dict()
-    )
-    substitute(
-        os.path.join('mysql', 'config', 'templates', 'password.templ'),
-        os.path.join('mysql', 'config', 'password'),
-        **configurator.as_dict()
-    )
-    substitute(
-        os.path.join('mysql', 'config', 'templates', 'database.templ'),
-        os.path.join('mysql', 'config', 'database'),
+        os.path.join('config', 'mysql', 'templates', 'auth.env.templ'),
+        os.path.join('config', 'mysql', 'auth.env'),
         **configurator.as_dict()
     )
 
@@ -174,18 +200,28 @@ def main():
     # We need a different delimiter in nginx config files, because the '$' sign
     # is widely used there
     substitute(
-        os.path.join('nginx', 'config', 'templates', 'lms.conf.templ'),
-        os.path.join('nginx', 'config', 'lms.conf'),
+        os.path.join('config', 'nginx', 'templates', 'lms.conf.templ'),
+        os.path.join('config', 'nginx', 'lms.conf'),
         delimiter='£', **configurator.as_dict()
     )
     substitute(
-        os.path.join('nginx', 'config', 'templates', 'cms.conf.templ'),
-        os.path.join('nginx', 'config', 'cms.conf'),
+        os.path.join('config', 'nginx', 'templates', 'cms.conf.templ'),
+        os.path.join('config', 'nginx', 'cms.conf'),
         delimiter='£', **configurator.as_dict()
     )
 
-    print("\nConfiguration files were successfuly generated. You may now build the app containers.")
+    # Android
+    substitute(
+        os.path.join('config', 'android', 'templates', 'universal.yaml.templ'),
+        os.path.join('config', 'android', 'universal.yaml'),
+        **configurator.as_dict()
+    )
 
+    print("\nConfiguration files were successfuly generated. You may now run the app containers.")
+
+
+def random_string(length):
+    return "".join([random.choice(string.ascii_letters + string.digits) for _ in range(length)])
 
 if __name__ == '__main__':
     main()
